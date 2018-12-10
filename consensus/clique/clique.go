@@ -571,6 +571,48 @@ func (c *Clique) Prepare(chain consensus.ChainReader, header *types.Header) erro
 // rewards given, and returns the final block.
 func (c *Clique) Finalize(chain consensus.ChainReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header, receipts []*types.Receipt) (*types.Block, error) {
 	// No block rewards in PoA, so the state remains as is and uncles are dropped
+
+	tickets := state.AllTickets()
+
+	for k, v := range tickets {
+		if v.ExpireTime <= header.Time.Uint64() {
+			state.RemoveTicket(v.ID)
+			ticketLog(state, v.ID, ticketExpired, header.Number.Uint64())
+			delete(tickets, k)
+		}
+	}
+
+	var selectedTicket common.Ticket
+
+	for _, v := range tickets {
+		selectedTicket = v
+		break
+	}
+
+	if selectedTicket.Value != nil {
+		state.RemoveTicket(selectedTicket.ID)
+		ticketLog(state, selectedTicket.ID, ticketSelected, header.Number.Uint64())
+		value := common.NewTimeLock(&common.TimeLockItem{
+			StartTime: header.Time.Uint64(),
+			EndTime:   selectedTicket.ExpireTime,
+			Value:     selectedTicket.Value,
+		})
+		state.AddTimeLockBalance(selectedTicket.Owner, common.SystemAssetID, value)
+		for _, v := range tickets {
+			if v.Owner != selectedTicket.Owner {
+				state.RemoveTicket(v.ID)
+				ticketLog(state, v.ID, ticketReturn, header.Number.Uint64())
+				value := common.NewTimeLock(&common.TimeLockItem{
+					StartTime: header.Time.Uint64(),
+					EndTime:   v.ExpireTime,
+					Value:     v.Value,
+				})
+				state.AddTimeLockBalance(v.Owner, common.SystemAssetID, value)
+				break
+			}
+		}
+	}
+
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 	header.UncleHash = types.CalcUncleHash(nil)
 
@@ -699,4 +741,24 @@ func (c *Clique) APIs(chain consensus.ChainReader) []rpc.API {
 		Service:   &API{chain: chain, clique: c},
 		Public:    false,
 	}}
+}
+
+type ticketLogType uint8
+
+const (
+	ticketSelected ticketLogType = iota
+	ticketReturn
+	ticketExpired
+)
+
+func ticketLog(state *state.StateDB, ticketID common.Hash, typ ticketLogType, blockNumber uint64) {
+	topic := common.Hash{}
+	topic[common.HashLength-1] = (uint8)(typ)
+
+	state.AddLog(&types.Log{
+		Address:     common.TicketLogAddress,
+		Topics:      []common.Hash{topic},
+		Data:        ticketID[:],
+		BlockNumber: blockNumber,
+	})
 }
