@@ -19,9 +19,11 @@ package clique
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"math/big"
 	"math/rand"
+	"sort"
 	"sync"
 	"time"
 
@@ -54,7 +56,7 @@ const (
 var (
 	epochLength = uint64(30000) // Default number of blocks after which to checkpoint and reset the pending votes
 
-	extraVanity = 32 // Fixed number of extra-data prefix bytes reserved for signer vanity
+	extraVanity = 36 // Fixed number of extra-data prefix bytes reserved for signer vanity
 	extraSeal   = 65 // Fixed number of extra-data suffix bytes reserved for signer seal
 
 	nonceAuthVote = hexutil.MustDecode("0xffffffffffffffff") // Magic nonce number to vote on adding a new signer
@@ -294,7 +296,9 @@ func (c *Clique) verifyHeader(chain consensus.ChainReader, header *types.Header,
 		return errMissingSignature
 	}
 	// Ensure that the extra-data contains a signer list on checkpoint, but none otherwise
-	signersBytes := len(header.Extra) - extraVanity - extraSeal
+
+	logLength := common.BytesToInt(header.Extra[extraVanity-4 : extraVanity])
+	signersBytes := len(header.Extra) - extraVanity - logLength - extraSeal
 	if !checkpoint && signersBytes != 0 {
 		return errExtraSigners
 	}
@@ -357,7 +361,8 @@ func (c *Clique) verifyCascadingFields(chain consensus.ChainReader, header *type
 		for i, signer := range snap.signers() {
 			copy(signers[i*common.AddressLength:], signer[:])
 		}
-		extraSuffix := len(header.Extra) - extraSeal
+		logLength := common.BytesToInt(header.Extra[extraVanity-4 : extraVanity])
+		extraSuffix := len(header.Extra) - extraSeal - logLength
 		if !bytes.Equal(header.Extra[extraVanity:extraSuffix], signers) {
 			return errInvalidCheckpointSigners
 		}
@@ -392,8 +397,8 @@ func (c *Clique) snapshot(chain consensus.ChainReader, number uint64, hash commo
 			checkpoint := chain.GetHeaderByNumber(number)
 			if checkpoint != nil {
 				hash := checkpoint.Hash()
-
-				signers := make([]common.Address, (len(checkpoint.Extra)-extraVanity-extraSeal)/common.AddressLength)
+				logLength := common.BytesToInt(checkpoint.Extra[extraVanity-4 : extraVanity])
+				signers := make([]common.Address, (len(checkpoint.Extra)-extraVanity-logLength-extraSeal)/common.AddressLength)
 				for i := 0; i < len(signers); i++ {
 					copy(signers[i][:], checkpoint.Extra[extraVanity+i*common.AddressLength:])
 				}
@@ -550,7 +555,6 @@ func (c *Clique) Prepare(chain consensus.ChainReader, header *types.Header) erro
 			header.Extra = append(header.Extra, signer[:]...)
 		}
 	}
-	header.Extra = append(header.Extra, make([]byte, extraSeal)...)
 
 	// Mix digest is reserved for now, set to empty
 	header.MixDigest = common.Hash{}
@@ -572,13 +576,29 @@ func (c *Clique) Prepare(chain consensus.ChainReader, header *types.Header) erro
 func (c *Clique) Finalize(chain consensus.ChainReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header, receipts []*types.Receipt) (*types.Block, error) {
 	// No block rewards in PoA, so the state remains as is and uncles are dropped
 
-	tickets := state.AllTickets()
+	temp := state.AllTickets()
+
+	tickets := make([]common.Ticket, len(temp))
+
+	i := 0
+
+	for _, v := range temp {
+		tickets[i] = v
+		i++
+	}
+
+	sort.Sort(ticketSlice(tickets))
+
+	logs := make([]ticketLog, 0)
 
 	for k, v := range tickets {
 		if v.ExpireTime <= header.Time.Uint64() {
 			state.RemoveTicket(v.ID)
-			ticketLog(state, v.ID, ticketExpired, header.Number.Uint64())
-			delete(tickets, k)
+			logs = append(logs, ticketLog{
+				TicketID: v.ID,
+				Type:     ticketExpired,
+			})
+			tickets = append(tickets[:k], tickets[k+1:]...)
 		}
 	}
 
@@ -591,7 +611,10 @@ func (c *Clique) Finalize(chain consensus.ChainReader, header *types.Header, sta
 
 	if selectedTicket.Value != nil {
 		state.RemoveTicket(selectedTicket.ID)
-		ticketLog(state, selectedTicket.ID, ticketSelected, header.Number.Uint64())
+		logs = append(logs, ticketLog{
+			TicketID: selectedTicket.ID,
+			Type:     ticketSelected,
+		})
 		value := common.NewTimeLock(&common.TimeLockItem{
 			StartTime: header.Time.Uint64(),
 			EndTime:   selectedTicket.ExpireTime,
@@ -601,7 +624,10 @@ func (c *Clique) Finalize(chain consensus.ChainReader, header *types.Header, sta
 		for _, v := range tickets {
 			if v.Owner != selectedTicket.Owner {
 				state.RemoveTicket(v.ID)
-				ticketLog(state, v.ID, ticketReturn, header.Number.Uint64())
+				logs = append(logs, ticketLog{
+					TicketID: v.ID,
+					Type:     ticketReturn,
+				})
 				value := common.NewTimeLock(&common.TimeLockItem{
 					StartTime: header.Time.Uint64(),
 					EndTime:   v.ExpireTime,
@@ -613,6 +639,10 @@ func (c *Clique) Finalize(chain consensus.ChainReader, header *types.Header, sta
 		}
 	}
 
+	logsBytes, _ := json.Marshal(logs)
+	copy(header.Extra[extraVanity-4:extraVanity], common.IntToBytes(len(logsBytes)))
+	header.Extra = append(header.Extra, logsBytes...)
+	header.Extra = append(header.Extra, make([]byte, extraSeal)...)
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 	header.UncleHash = types.CalcUncleHash(nil)
 
@@ -751,14 +781,19 @@ const (
 	ticketExpired
 )
 
-func ticketLog(state *state.StateDB, ticketID common.Hash, typ ticketLogType, blockNumber uint64) {
-	topic := common.Hash{}
-	topic[common.HashLength-1] = (uint8)(typ)
+type ticketLog struct {
+	TicketID common.Hash   `json:"id"`
+	Type     ticketLogType `json:"type"`
+}
 
-	state.AddLog(&types.Log{
-		Address:     common.TicketLogAddress,
-		Topics:      []common.Hash{topic},
-		Data:        ticketID[:],
-		BlockNumber: blockNumber,
-	})
+type ticketSlice []common.Ticket
+
+func (ts ticketSlice) Len() int {
+	return len(ts)
+}
+func (ts ticketSlice) Swap(i, j int) {
+	ts[i], ts[j] = ts[j], ts[i]
+}
+func (ts ticketSlice) Less(i, j int) bool {
+	return new(big.Int).SetBytes(ts[i].ID[:]).Cmp(new(big.Int).SetBytes(ts[j].ID[:])) < 0
 }
