@@ -297,14 +297,14 @@ func (c *Clique) verifyHeader(chain consensus.ChainReader, header *types.Header,
 	}
 	// Ensure that the extra-data contains a signer list on checkpoint, but none otherwise
 
-	logLength := common.BytesToInt(header.Extra[extraVanity-4 : extraVanity])
-	signersBytes := len(header.Extra) - extraVanity - logLength - extraSeal
-	if !checkpoint && signersBytes != 0 {
-		return errExtraSigners
-	}
-	if checkpoint && signersBytes%common.AddressLength != 0 {
-		return errInvalidCheckpointSigners
-	}
+	// logLength := common.BytesToInt(header.Extra[extraVanity-4 : extraVanity])
+	// signersBytes := len(header.Extra) - extraVanity - logLength - extraSeal
+	// if !checkpoint && signersBytes != 0 {
+	// 	return errExtraSigners
+	// }
+	// if checkpoint && signersBytes%common.AddressLength != 0 {
+	// 	return errInvalidCheckpointSigners
+	// }
 	// Ensure that the mix digest is zero as we don't have fork protection currently
 	if header.MixDigest != (common.Hash{}) {
 		return errInvalidMixDigest
