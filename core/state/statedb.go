@@ -80,6 +80,11 @@ type StateDB struct {
 	validRevisions []revision
 	nextRevisionId int
 
+	notations []common.Address
+	assets    map[common.Hash]common.Asset
+	tickets   map[common.Hash]common.Ticket
+	swaps     map[common.Hash]common.Swap
+
 	lock sync.Mutex
 }
 
@@ -128,6 +133,11 @@ func (self *StateDB) Reset(root common.Hash) error {
 	self.logSize = 0
 	self.preimages = make(map[common.Hash][]byte)
 	self.clearJournalAndRefund()
+
+	self.notations = nil
+	self.assets = nil
+	self.tickets = nil
+	self.swaps = nil
 	return nil
 }
 
@@ -192,7 +202,7 @@ func (self *StateDB) GetAllBalances(addr common.Address) map[common.Hash]string 
 	if stateObject != nil {
 		balances := stateObject.Balances()
 		retBalances := make(map[common.Hash]string)
-		for k, v := range balances {		
+		for k, v := range balances {
 			retBalances[k] = v.String()
 		}
 		return retBalances
@@ -635,6 +645,24 @@ func (self *StateDB) Copy() *StateDB {
 	for hash, preimage := range self.preimages {
 		state.preimages[hash] = preimage
 	}
+
+	if self.notations != nil {
+		state.notations = make([]common.Address, len(self.notations))
+		copy(state.notations, self.notations)
+	}
+
+	for hash, asset := range self.assets {
+		state.assets[hash] = asset
+	}
+
+	for hash, ticket := range self.tickets {
+		state.tickets[hash] = ticket
+	}
+
+	for hash, swap := range self.swaps {
+		state.swaps[hash] = swap
+	}
+
 	return state
 }
 
@@ -720,6 +748,42 @@ func (s *StateDB) clearJournalAndRefund() {
 func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) {
 	defer s.clearJournalAndRefund()
 
+	if s.notations != nil {
+		data, err := rlp.EncodeToBytes(&s.notations)
+		if err != nil {
+			return common.Hash{}, err
+		}
+		s.SetData(common.FSNCallAddress, common.NotationKey, data)
+		s.notations = nil
+	}
+
+	if s.assets != nil {
+		data, err := rlp.EncodeToBytes(&s.assets)
+		if err != nil {
+			return common.Hash{}, err
+		}
+		s.SetData(common.FSNCallAddress, common.AssetKey, data)
+		s.assets = nil
+	}
+
+	if s.tickets != nil {
+		data, err := rlp.EncodeToBytes(&s.tickets)
+		if err != nil {
+			return common.Hash{}, err
+		}
+		s.SetData(common.FSNCallAddress, common.TicketKey, data)
+		s.tickets = nil
+	}
+
+	if s.swaps != nil {
+		data, err := rlp.EncodeToBytes(&s.swaps)
+		if err != nil {
+			return common.Hash{}, err
+		}
+		s.SetData(common.FSNCallAddress, common.SwapKey, data)
+		s.swaps = nil
+	}
+
 	for addr := range s.journal.dirties {
 		s.stateObjectsDirty[addr] = struct{}{}
 	}
@@ -776,6 +840,9 @@ func (db *StateDB) GetNotation(addr common.Address) uint64 {
 
 // AllNotation wacom
 func (db *StateDB) AllNotation() []common.Address {
+	if db.notations != nil {
+		return db.notations
+	}
 	data := db.GetData(common.FSNCallAddress, common.NotationKey)
 	var notations []common.Address
 	if len(data) == 0 || data == nil {
@@ -783,6 +850,7 @@ func (db *StateDB) AllNotation() []common.Address {
 	} else {
 		rlp.DecodeBytes(data, &notations)
 	}
+	db.notations = notations
 	return notations
 }
 
@@ -795,27 +863,22 @@ func (db *StateDB) GenNotation(addr common.Address) error {
 		}
 		notations := db.AllNotation()
 		notations = append(notations, addr)
-		data, err := rlp.EncodeToBytes(&notations)
-		if err != nil {
-			return err
-		}
-		db.SetData(common.FSNCallAddress, common.NotationKey, data)
 		stateObject.SetNotation(uint64(len(notations)))
+		db.notations = notations
 	}
 	return nil
 }
 
 func (db *StateDB) updateAssets(assets map[common.Hash]common.Asset) error {
-	data, err := rlp.EncodeToBytes(&assets)
-	if err != nil {
-		return err
-	}
-	db.SetData(common.FSNCallAddress, common.AssetKey, data)
+	db.assets = assets
 	return nil
 }
 
 // AllAssets wacom
 func (db *StateDB) AllAssets() map[common.Hash]common.Asset {
+	if db.assets != nil {
+		return db.assets
+	}
 	data := db.GetData(common.FSNCallAddress, common.AssetKey)
 	var assets map[common.Hash]common.Asset
 	if len(data) == 0 || data == nil {
@@ -823,6 +886,7 @@ func (db *StateDB) AllAssets() map[common.Hash]common.Asset {
 	} else {
 		rlp.DecodeBytes(data, &assets)
 	}
+	db.assets = assets
 	return assets
 }
 
@@ -848,6 +912,9 @@ func (db *StateDB) UpdateAsset(asset common.Asset) error {
 
 // AllTickets wacom
 func (db *StateDB) AllTickets() map[common.Hash]common.Ticket {
+	if db.tickets != nil {
+		return db.tickets
+	}
 	data := db.GetData(common.FSNCallAddress, common.TicketKey)
 	var tickets map[common.Hash]common.Ticket
 	if len(data) == 0 || data == nil {
@@ -855,6 +922,7 @@ func (db *StateDB) AllTickets() map[common.Hash]common.Ticket {
 	} else {
 		rlp.DecodeBytes(data, &tickets)
 	}
+	db.tickets = tickets
 	return tickets
 }
 
@@ -879,16 +947,15 @@ func (db *StateDB) RemoveTicket(id common.Hash) error {
 }
 
 func (db *StateDB) updateTickets(tickets map[common.Hash]common.Ticket) error {
-	data, err := rlp.EncodeToBytes(&tickets)
-	if err != nil {
-		return err
-	}
-	db.SetData(common.FSNCallAddress, common.TicketKey, data)
+	db.tickets = tickets
 	return nil
 }
 
 // AllSwaps wacom
 func (db *StateDB) AllSwaps() map[common.Hash]common.Swap {
+	if db.swaps != nil {
+		return db.swaps
+	}
 	data := db.GetData(common.FSNCallAddress, common.SwapKey)
 	var swaps map[common.Hash]common.Swap
 	if len(data) == 0 || data == nil {
@@ -896,6 +963,7 @@ func (db *StateDB) AllSwaps() map[common.Hash]common.Swap {
 	} else {
 		rlp.DecodeBytes(data, &swaps)
 	}
+	db.swaps = swaps
 	return swaps
 }
 
@@ -930,10 +998,6 @@ func (db *StateDB) RemoveSwap(id common.Hash) error {
 }
 
 func (db *StateDB) updateSwaps(swaps map[common.Hash]common.Swap) error {
-	data, err := rlp.EncodeToBytes(&swaps)
-	if err != nil {
-		return err
-	}
-	db.SetData(common.FSNCallAddress, common.SwapKey, data)
+	db.swaps = swaps
 	return nil
 }
