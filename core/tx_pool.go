@@ -210,6 +210,9 @@ type TxPool struct {
 	wg sync.WaitGroup // for shutdown sync
 
 	homestead bool
+
+	oldsinger types.Signer
+	newsinger types.Signer
 }
 
 // NewTxPool creates a new transaction pool to gather, sort and filter inbound
@@ -223,13 +226,19 @@ func NewTxPool(config TxPoolConfig, chainconfig *params.ChainConfig, chain block
 		config:      config,
 		chainconfig: chainconfig,
 		chain:       chain,
-		signer:      types.NewEIP155Signer(chainconfig.ChainID),
 		pending:     make(map[common.Address]*txList),
 		queue:       make(map[common.Address]*txList),
 		beats:       make(map[common.Address]time.Time),
 		all:         newTxLookup(),
 		chainHeadCh: make(chan ChainHeadEvent, chainHeadChanSize),
 		gasPrice:    new(big.Int).SetUint64(config.PriceLimit),
+	}
+	pool.newsinger = types.NewEIP155Signer(params.ReplayFixChainID)
+	pool.oldsinger = types.NewEIP155Signer(pool.chainconfig.ChainID)
+	if chain.CurrentBlock().Header().Number.Cmp(params.ReplayFixBlockNumber) >= 0 {
+		pool.signer = pool.newsinger
+	} else {
+		pool.signer = pool.oldsinger
 	}
 	pool.locals = newAccountSet(pool.signer)
 	for _, addr := range config.Locals {
@@ -356,6 +365,11 @@ func (pool *TxPool) lockedReset(oldHead, newHead *types.Header) {
 func (pool *TxPool) reset(oldHead, newHead *types.Header) {
 	// If we're reorging an old state, reinject all dropped transactions
 	var reinject types.Transactions
+	if newHead.Number.Cmp(params.ReplayFixBlockNumber) >= 0 {
+		pool.signer = pool.newsinger
+	} else {
+		pool.signer = pool.oldsinger
+	}
 
 	if oldHead != nil && oldHead.Hash() != newHead.ParentHash {
 		// If the reorg is too deep, avoid doing it (will happen during fast sync)
@@ -580,7 +594,7 @@ func (pool *TxPool) validateTx(tx *types.Transaction, local bool) error {
 		return ErrGasLimit
 	}
 	// Make sure the transaction is signed properly
-	from, err := types.Sender(pool.signer, tx)
+	from, err := types.Sender(signer, tx)
 	if err != nil {
 		return ErrInvalidSender
 	}

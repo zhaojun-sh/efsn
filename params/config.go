@@ -25,9 +25,11 @@ import (
 
 // Genesis hashes to enforce below configs on.
 var (
-	MainnetGenesisHash = common.HexToHash("0xabce10521451bd9945a776816b40f49ddb3cef755e4f10c58dc5bc60bfdb911e")
-	TestnetGenesisHash = common.HexToHash("0x41941023680923e0fe4d74a34bdac8141f2540e3ae90623718e47d66d1ca4a2d")
-	RinkebyGenesisHash = common.HexToHash("0x6341fd3daf94b748c72ced5a5b26028f2474f5f00d824504e4fa37a75767e177")
+	MainnetGenesisHash   = common.HexToHash("0xabce10521451bd9945a776816b40f49ddb3cef755e4f10c58dc5bc60bfdb911e")
+	TestnetGenesisHash   = common.HexToHash("0x41941023680923e0fe4d74a34bdac8141f2540e3ae90623718e47d66d1ca4a2d")
+	RinkebyGenesisHash   = common.HexToHash("0x6341fd3daf94b748c72ced5a5b26028f2474f5f00d824504e4fa37a75767e177")
+	ReplayFixBlockNumber = big.NewInt(0) // need change go real
+	ReplayFixChainID     = big.NewInt(5)
 )
 
 var (
